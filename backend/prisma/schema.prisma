@@ -1,0 +1,358 @@
+// EderGPT Database Schema
+// Prisma ORM with PostgreSQL
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+model User {
+  id            String     @id @default(uuid())
+  username      String     @unique
+  passwordHash  String
+  email         String?
+  firstName     String?
+  lastName      String?
+  department    String?
+  role          Role       @default(USER)
+  status        UserStatus @default(ACTIVE)
+
+  // Relationships
+  folders       UserFolder[]
+  groups        UserGroup[]
+  chats         Chat[]
+  auditLogs     AuditLog[]
+
+  // Timestamps
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  lastLoginAt   DateTime?
+
+  @@index([username])
+  @@index([role])
+  @@index([status])
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  POWER_USER
+  USER
+  READONLY
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  LOCKED
+}
+
+// ============================================
+// GROUPS
+// ============================================
+
+model Group {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+
+  // Relationships
+  users       UserGroup[]
+  folders     GroupFolder[]
+
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([name])
+}
+
+model UserGroup {
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  group     Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  groupId   String
+
+  assignedAt DateTime @default(now())
+
+  @@id([userId, groupId])
+}
+
+// ============================================
+// KNOWLEDGE MANAGEMENT
+// ============================================
+
+model Folder {
+  id            String       @id @default(uuid())
+  name          String
+  path          String       @unique
+  description   String?
+
+  // Hierarchy
+  parentId      String?
+  parent        Folder?      @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children      Folder[]     @relation("FolderTree")
+
+  // Knowledge Settings
+  knowledgeMode KnowledgeMode @default(HYBRID)
+  priority      Int           @default(0)
+  status        FolderStatus  @default(ACTIVE)
+
+  // Optional: Folder-specific prompt override
+  promptOverride String?
+
+  // Relationships
+  documents     Document[]
+  userFolders   UserFolder[]
+  groupFolders  GroupFolder[]
+
+  // Timestamps
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([path])
+  @@index([parentId])
+  @@index([status])
+}
+
+enum KnowledgeMode {
+  LLM_ONLY
+  HYBRID
+  RAG_ONLY
+}
+
+enum FolderStatus {
+  ACTIVE
+  ARCHIVED
+  LOCKED
+}
+
+model UserFolder {
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  folder    Folder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  folderId  String
+
+  assignedAt DateTime @default(now())
+
+  @@id([userId, folderId])
+}
+
+model GroupFolder {
+  group     Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  groupId   String
+  folder    Folder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  folderId  String
+
+  assignedAt DateTime @default(now())
+
+  @@id([groupId, folderId])
+}
+
+// ============================================
+// DOCUMENTS & CHUNKS
+// ============================================
+
+model Document {
+  id          String    @id @default(uuid())
+  name        String
+  fileType    String
+  filePath    String
+  fileSize    Int
+  fileHash    String
+
+  // Processing Status
+  status      DocStatus @default(PENDING)
+  processedAt DateTime?
+  errorMessage String?
+
+  // Metadata
+  pageCount   Int?
+  wordCount   Int?
+
+  // Relationships
+  folder      Folder    @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  folderId    String
+  chunks      Chunk[]
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([folderId])
+  @@index([status])
+  @@index([fileHash])
+}
+
+enum DocStatus {
+  PENDING
+  PROCESSING
+  INDEXED
+  FAILED
+  ARCHIVED
+}
+
+model Chunk {
+  id            String   @id @default(uuid())
+  content       String
+  
+  // Metadata for RAG
+  pageNumber    Int?
+  sectionTitle  String?
+  chunkIndex    Int
+  tokenCount    Int
+
+  // Vector ID in Qdrant (stored separately)
+  vectorId      String?
+
+  // Relationships
+  document      Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentId    String
+
+  // Timestamps
+  createdAt     DateTime @default(now())
+
+  @@index([documentId])
+  @@index([vectorId])
+}
+
+// ============================================
+// CHAT & MESSAGES
+// ============================================
+
+model Chat {
+  id          String   @id @default(uuid())
+  title       String?
+  isArchived  Boolean  @default(false)
+
+  // Relationships
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  messages    ChatMessage[]
+
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@index([isArchived])
+}
+
+model ChatMessage {
+  id          String      @id @default(uuid())
+  role        MessageRole
+  content     String
+
+  // RAG Metadata
+  mode        KnowledgeMode?
+  sources     Json?       // Array of Source objects
+
+  // Feedback
+  feedback    Feedback?
+  feedbackComment String?
+
+  // Token Usage
+  promptTokens    Int?
+  completionTokens Int?
+
+  // Relationships
+  chat        Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chatId      String
+
+  // Timestamps
+  createdAt   DateTime    @default(now())
+
+  @@index([chatId])
+  @@index([role])
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum Feedback {
+  POSITIVE
+  NEGATIVE
+}
+
+// ============================================
+// SYSTEM SETTINGS
+// ============================================
+
+model SystemSettings {
+  id          String   @id @default("singleton")
+  
+  // All settings as JSON
+  settings    Json
+
+  // Timestamps
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+}
+
+// ============================================
+// PROMPTS
+// ============================================
+
+model Prompt {
+  id          String     @id @default(uuid())
+  name        String     @unique
+  type        PromptType
+  content     String
+  isActive    Boolean    @default(true)
+  version     Int        @default(1)
+
+  // Optional: For folder-specific prompts
+  folderId    String?
+
+  // Timestamps
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([type])
+  @@index([isActive])
+}
+
+enum PromptType {
+  SYSTEM
+  FOLDER
+  TENANT
+}
+
+// ============================================
+// AUDIT & LOGGING
+// ============================================
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  action      String
+  entityType  String
+  entityId    String?
+  details     Json?
+  ipAddress   String?
+  userAgent   String?
+
+  // Relationships
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId      String?
+
+  // Timestamps
+  createdAt   DateTime @default(now())
+
+  @@index([action])
+  @@index([entityType])
+  @@index([userId])
+  @@index([createdAt])
+}
+
